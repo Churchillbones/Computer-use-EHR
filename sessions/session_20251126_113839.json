@@ -1,0 +1,22 @@
+{
+  "session_id": "20251126_113839",
+  "started_at": "2025-11-26T11:38:39.619672",
+  "model": "gpt-5",
+  "interactions": [
+    {
+      "user_input": "Hello",
+      "input_type": "natural_language",
+      "error": "400 Client Error: Bad Request for url: https://spd-dev-openai-std-apim.azure-api.us/openai/v1/chat/completions",
+      "timestamp": "2025-11-26T11:39:08.305033",
+      "interaction_number": 1
+    }
+  ],
+  "summary": {
+    "total_interactions": 1,
+    "successful_actions": 0,
+    "failed_actions": 0,
+    "user_corrections": 0
+  },
+  "ended_at": "2025-11-26T11:39:16.134232",
+  "final_notes": "User interrupted with Ctrl+C"
+}

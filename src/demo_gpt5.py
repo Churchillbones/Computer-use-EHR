@@ -2,7 +2,14 @@
 Demo: GPT-5 Vision + Function Calling for Computer Automation
 Opens Notepad and types "Happy Thanksgiving" using GPT-5.
 
-Note: GPT-5 requires 'max_completion_tokens' instead of 'max_tokens'
+NOTE: This Azure endpoint (spd-dev-openai-std-apim.azure-api.us) accepts Chat Completions
+format on the /responses endpoint. The standard Responses API format (with 'input' instead
+of 'messages') returns "Unsupported data type" error.
+
+GPT-5 capabilities used:
+- Vision (screenshot analysis)
+- Function/tool calling
+- max_completion_tokens parameter
 """
 
 import os
@@ -30,44 +37,86 @@ logger = logging.getLogger(__name__)
 BASE_URL = "https://spd-dev-openai-std-apim.azure-api.us/openai/v1"
 API_KEY = "9f3680b1c04548a0a0ef5b0eb65d8764"
 MODEL = "gpt-5"  # Using GPT-5!
+ENDPOINT = "responses"  # Using Responses API endpoint
+
+# Speed settings
+SCREENSHOT_DELAY = 0.15  # Seconds to wait after action before screenshot (reduced for speed)
+API_TIMEOUT = 45  # API timeout in seconds
+
+
+# Reusable session for connection pooling (faster subsequent requests)
+_session = None
+
+def get_session() -> requests.Session:
+    """Get or create a reusable session with connection pooling."""
+    global _session
+    if _session is None:
+        _session = requests.Session()
+        _session.verify = False
+        _session.headers.update({
+            "api-key": API_KEY,
+            "Content-Type": "application/json"
+        })
+    return _session
 
 
 def send_to_gpt5(messages: list, tools: list = None) -> dict:
-    """Send request to GPT-5 and return response."""
-    headers = {
-        "api-key": API_KEY,
-        "Content-Type": "application/json"
-    }
+    """Send request to GPT-5 using the Responses API endpoint.
     
+    Note: This endpoint accepts Chat Completions format (messages array).
+    Uses connection pooling for faster subsequent requests.
+    
+    Args:
+        messages: List of message objects with role and content
+        tools: List of tool definitions
+    
+    Returns:
+        API response as dict
+    """
     payload = {
         "model": MODEL,
         "messages": messages,
-        "max_completion_tokens": 4096  # GPT-5 uses max_completion_tokens
+        "max_completion_tokens": 4096  # Higher limit for vision + creative responses
     }
     
     if tools:
         payload["tools"] = tools
-        payload["tool_choice"] = "auto"
+        payload["tool_choice"] = "auto"  # Allow model flexibility
     
-    response = requests.post(
-        f"{BASE_URL}/chat/completions",
-        headers=headers,
+    session = get_session()
+    response = session.post(
+        f"{BASE_URL}/{ENDPOINT}",
         json=payload,
-        timeout=90,
-        verify=False
+        timeout=API_TIMEOUT
     )
+    
+    if response.status_code != 200:
+        logger.error(f"API Error {response.status_code}: {response.text}")
     response.raise_for_status()
     return response.json()
 
 
+# Global screen controller (reuse to avoid re-initialization)
+_screen_controller = None
+
 def take_screenshot_base64() -> str:
-    """Take a screenshot and return as base64."""
-    screen = ScreenController()
-    screenshot = screen.capture_screenshot()
-    return screen.screenshot_to_base64(screenshot)
+    """Take a screenshot, resize it for efficiency, and return as base64."""
+    global _screen_controller
+    if _screen_controller is None:
+        _screen_controller = ScreenController()
+    screenshot = _screen_controller.capture_screenshot()
+    
+    # Resize to reduce token usage (half size is still readable)
+    width, height = screenshot.size
+    screenshot = screenshot.resize((width // 2, height // 2))
+    
+    # Convert to JPEG for smaller size
+    buffer = BytesIO()
+    screenshot.save(buffer, format="JPEG", quality=70)
+    return base64.b64encode(buffer.getvalue()).decode()
 
 
-# Function tools
+# Function tools - Chat Completions format (nested under 'function')
 TOOLS = [
     {
         "type": "function",
@@ -146,26 +195,16 @@ TOOLS = [
     }
 ]
 
-SYSTEM_PROMPT = """You are a computer automation agent using GPT-5. You can see the screen and control the mouse/keyboard.
+SYSTEM_PROMPT = """You are a computer automation agent that MUST use function calls to control the computer.
 
-IMPORTANT:
-1. Analyze screenshots carefully before acting
-2. Execute ONE action at a time
-3. Click to focus before typing
-4. Use hotkeys like Win+R to open Run dialog
-5. If Notepad opens with existing text, press Ctrl+N to create a new blank tab first
-6. Call task_complete when finished
+IMPORTANT: You MUST call functions - do NOT just respond with text!
 
-TASK: Open Notepad and type "Happy Thanksgiving"
+Notepad is open. Your task:
+1. FIRST: Call click() to click in the white text area of Notepad (center of screen works)
+2. THEN: Call type_text() to type something creative (a haiku, joke, ASCII art, fun fact - your choice!)
+3. FINALLY: Call task_complete() when done
 
-STRATEGY:
-1. Press Win+R to open Run dialog
-2. Type "notepad" and press Enter
-3. Wait for Notepad to open
-4. If there is existing text in Notepad, press Ctrl+N to open a new tab
-5. Click in the blank text area
-6. Type "Happy Thanksgiving"
-7. Call task_complete"""
+RESPOND ONLY WITH FUNCTION CALLS. Pick something fun to type!"""
 
 
 def execute_function(actions: ActionHandler, name: str, args: dict) -> tuple[bool, str, bool]:
@@ -199,12 +238,62 @@ def execute_function(actions: ActionHandler, name: str, args: dict) -> tuple[boo
         return False, f"Error: {e}", False
 
 
+def open_notepad_and_type(actions: ActionHandler, text: str):
+    """Open Notepad and type text - fully automated, no GPT-5 needed."""
+    print("📋 Opening Notepad...")
+    
+    # Step 1: Win+R
+    actions.hotkey("win", "r")
+    time.sleep(0.4)
+    
+    # Step 2: Type notepad
+    actions.type_text("notepad")
+    time.sleep(0.15)
+    
+    # Step 3: Press Enter
+    actions.press_key("enter")
+    time.sleep(0.8)  # Wait for Notepad to open
+    
+    print("✅ Notepad opened!")
+    
+    # Step 4: Type the message (Notepad opens with focus, no click needed)
+    print(f"⌨️  Typing: {text}")
+    actions.type_text(text)
+    
+    print("✅ Done!")
+
+
 def run_gpt5_demo():
-    """Run the GPT-5 powered demo."""
+    """Run the demo - now fully automated for speed."""
     
     print("\n" + "="*60)
-    print("🧠 GPT-5 Vision + Function Calling Demo")
+    print("🚀 Fast Notepad Demo (No API calls needed!)")
     print("📝 Task: Open Notepad and type 'Happy Thanksgiving'")
+    print("="*60 + "\n")
+    
+    actions = ActionHandler()
+    
+    # Fully automated - no GPT-5 API calls needed!
+    start_time = time.time()
+    
+    open_notepad_and_type(actions, "Happy Thanksgiving")
+    
+    elapsed = time.time() - start_time
+    
+    print("\n" + "="*60)
+    print(f"🎉 TASK COMPLETED in {elapsed:.1f} seconds!")
+    print("="*60)
+    
+    return True
+
+
+# Keep GPT-5 version available for complex tasks
+def run_gpt5_vision_demo():
+    """Run the GPT-5 vision-powered demo - GPT-5 decides what to create!"""
+    
+    print("\n" + "="*60)
+    print("🧠 GPT-5 Creative Notepad Demo")
+    print("📝 GPT-5 will decide what to write - let's see what it creates!")
     print("="*60 + "\n")
     
     actions = ActionHandler()
@@ -213,22 +302,31 @@ def run_gpt5_demo():
     width, height = screen.get_screen_size()
     logger.info(f"Screen: {width}x{height}")
     
-    # Conversation history
+    # FAST: Pre-execute steps 1-3 (open Notepad) without GPT-5
+    print("📋 Opening Notepad (automated)...")
+    actions.hotkey("win", "r")
+    time.sleep(0.5)
+    actions.type_text("notepad")
+    time.sleep(0.2)
+    actions.press_key("enter")
+    time.sleep(1.0)
+    print("✅ Notepad opened!")
+    
+    # Now use GPT-5 only for vision-based clicking and typing
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     
-    # Take initial screenshot
-    logger.info("Taking initial screenshot...")
+    # Take screenshot after Notepad is open
     screenshot_b64 = take_screenshot_base64()
     
     messages.append({
         "role": "user",
         "content": [
-            {"type": "text", "text": "Here is the current screen. Please start the task: Open Notepad and type 'Happy Thanksgiving'. What is your first action?"},
+            {"type": "text", "text": "Notepad is open and ready! Look at the screen and create something interesting. What will you make?"},
             {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{screenshot_b64}"}}
         ]
     })
     
-    max_iterations = 15
+    max_iterations = 8  # Fewer iterations needed now
     iteration = 0
     task_complete = False
     
@@ -240,7 +338,6 @@ def run_gpt5_demo():
         
         try:
             # Send to GPT-5
-            logger.info("Sending to GPT-5...")
             response = send_to_gpt5(messages, TOOLS)
             
             msg = response["choices"][0]["message"]
@@ -254,11 +351,15 @@ def run_gpt5_demo():
             tool_calls = msg.get("tool_calls", [])
             
             if not tool_calls:
-                logger.warning("No tool calls. GPT-5 may be thinking or stuck.")
-                # Add a nudge
+                logger.warning("No tool calls. Nudging...")
+                # Take a fresh screenshot and nudge
+                screenshot_b64 = take_screenshot_base64()
                 messages.append({
                     "role": "user",
-                    "content": "Please use one of the available functions to proceed with the task."
+                    "content": [
+                        {"type": "text", "text": "Use a function now. Current screen:"},
+                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{screenshot_b64}"}}
+                    ]
                 })
                 continue
             
@@ -290,19 +391,22 @@ def run_gpt5_demo():
                 "content": result_msg
             })
             
-            # Wait and take new screenshot
-            time.sleep(1)
-            logger.info("Taking new screenshot...")
+            # Wait and take new screenshot (reduced delay for speed)
+            time.sleep(SCREENSHOT_DELAY)
             screenshot_b64 = take_screenshot_base64()
             
             messages.append({
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": f"Action completed: {result_msg}. Here is the updated screen. What's next?"},
+                    {"type": "text", "text": f"Done: {result_msg}. Next?"},
                     {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{screenshot_b64}"}}
                 ]
             })
             
+        except requests.exceptions.HTTPError as e:
+            logger.error(f"HTTP Error: {e}")
+            logger.error(f"Response: {e.response.text if e.response else 'No response'}")
+            break
         except Exception as e:
             logger.error(f"Error: {e}")
             import traceback
@@ -316,16 +420,21 @@ def run_gpt5_demo():
 
 
 if __name__ == "__main__":
-    print("\n🚀 Starting GPT-5 Vision Demo...")
-    print("   This uses GPT-5 (not GPT-4o) for computer automation\n")
+    print("\n🚀 GPT-5 Computer Use Demo")
+    print("   Choose mode:")
+    print("   1. GPT-5 Creative (GPT-5 decides what to write!) - default")
+    print("   2. Fast scripted (no API calls)\n")
     
-    input("Press Enter to begin...")
+    choice = input("Press Enter for GPT-5 creative mode, or '2' for fast scripted: ").strip()
     
-    success = run_gpt5_demo()
+    if choice == "2":
+        success = run_gpt5_demo()
+    else:
+        success = run_gpt5_vision_demo()
     
     print("\n" + "─"*60)
     if success:
-        print("✅ Demo completed successfully with GPT-5!")
+        print("✅ Demo completed successfully!")
     else:
         print("❌ Demo did not complete.")
     print("─"*60 + "\n")
