@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 # Configuration
 BASE_URL = "https://spd-dev-openai-std-apim.azure-api.us/openai/v1"
 API_KEY = "9f3680b1c04548a0a0ef5b0eb65d8764"
-MODEL = "gpt-5"  # Using GPT-5!
+MODEL = "gpt-5.1"  # Upgraded to GPT-5.1 - 2x faster than gpt-5!
 ENDPOINT = "responses"  # Using Responses API endpoint
 
 # Speed settings
